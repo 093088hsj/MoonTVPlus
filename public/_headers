@@ -1,0 +1,19 @@
+# Cloudflare Workers Assets 自定义响应头
+# https://developers.cloudflare.com/workers/static-assets/headers/
+# https://opennext.js.org/cloudflare/caching#static-assets-caching
+#
+# Workers Assets 层直接返回静态资源，Worker 代码与 next.config.js 的 headers 都不经过，
+# 默认头是 public, max-age=0, must-revalidate —— 每次访问每个文件都要回源校验。
+# /_next/static/ 下的文件名都带内容哈希，可以安全地长期缓存。
+
+/_next/static/*
+  Cache-Control: public,max-age=31536000,immutable
+
+/icons/*
+  Cache-Control: public,max-age=604800
+
+/logo.png
+  Cache-Control: public,max-age=604800
+
+/favicon.ico
+  Cache-Control: public,max-age=604800
