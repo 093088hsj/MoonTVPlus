@@ -7,6 +7,38 @@ import { getAuthInfoFromCookie } from '@/lib/auth';
 import { TOKEN_CONFIG } from '@/lib/refresh-token';
 import { isTVModeEnabled, resolveLoginPath } from '@/lib/tv-mode';
 
+// 与下方 config.matcher 负向前瞻保持一致的免认证路径
+const MIDDLEWARE_PUBLIC_PATHS = [
+  '/login',
+  '/register',
+  '/oidc-register',
+  '/qr-login',
+  '/warning',
+  '/tv/login',
+  '/api/login',
+  '/api/register',
+  '/api/logout',
+  '/api/auth/oidc',
+  '/api/auth/qr',
+  '/api/auth/refresh',
+  '/api/telegram/login',
+  '/api/telegram/config',
+  '/api/telegram/webhook',
+  '/api/cron/',
+  '/api/server-config',
+  '/api/proxy-m3u8',
+  '/api/cms-proxy',
+  '/api/tvbox/subscribe',
+  '/api/theme/css',
+  '/api/openlist/cms-proxy',
+  '/api/openlist/play',
+  '/api/emby/cms-proxy',
+  '/api/emby/play',
+  '/api/emby/subtitle',
+  '/api/emby/sources',
+  '/tvbox/',
+];
+
 export async function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;
 
@@ -175,9 +207,15 @@ function shouldSkipAuth(pathname: string): boolean {
     '/icons/',
     '/logo.png',
     '/screenshot.png',
+    // 下面这些路径本应由 config.matcher 的负向前瞻排除。
+    // EdgeOne Pages 的边缘函数用自己的 config.json matcher 决定是否拦截，
+    // 在 Git 云端构建里拿不到 Next matcher（产物收集发生在 buildCommand 之后），
+    // 会退化成 /:path* 全量拦截，导致 /login 无限重定向。
+    // 在代码里再放行一遍，任何平台都能正确工作。
+    ...MIDDLEWARE_PUBLIC_PATHS,
   ];
 
-  return skipPaths.some((path) => pathname.startsWith(path));
+  return skipPaths.some((path) => pathname === path || pathname.startsWith(path));
 }
 
 function isTVModePath(pathname: string): boolean {
