@@ -50,6 +50,38 @@ function isBangumiImageUrl(url: string): boolean {
   }
 }
 
+/**
+ * 允许代理的图片域名。
+ *
+ * 这个接口对未登录请求开放（否则浏览器和 CDN 都无法缓存海报图，每次都要带
+ * cookie 回源），因此必须限定目标域名，避免变成任意 URL 的开放代理。
+ */
+const ALLOWED_IMAGE_HOST_SUFFIXES = [
+  'doubanio.com',
+  'doubanio.cmliussss.net',
+  'doubanio.cmliussss.com',
+  'douban.com',
+  'bgm.tv',
+  'bangumi.tv',
+  'bangumi.lol',
+  'tmdb.org',
+  'themoviedb.org',
+];
+
+function isAllowedImageTarget(imageUrl: string, source?: string): boolean {
+  let hostname: string;
+  try {
+    hostname = new URL(imageUrl).hostname.toLowerCase();
+  } catch {
+    // 相对路径只在 bangumi 场景下出现，会被拼上管理员配置的 BangumiImageBaseUrl
+    return source === 'bangumi';
+  }
+
+  return ALLOWED_IMAGE_HOST_SUFFIXES.some(
+    (suffix) => hostname === suffix || hostname.endsWith(`.${suffix}`)
+  );
+}
+
 async function fetchImage(
   imageUrl: string,
   options?: { source?: string }
@@ -96,6 +128,13 @@ export async function GET(request: Request) {
 
   if (!imageUrl) {
     return NextResponse.json({ error: 'Missing image URL' }, { status: 400 });
+  }
+
+  if (!isAllowedImageTarget(imageUrl, source)) {
+    return NextResponse.json(
+      { error: 'Unsupported image host' },
+      { status: 400 }
+    );
   }
 
   try {
