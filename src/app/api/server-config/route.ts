@@ -84,5 +84,12 @@ export async function GET(request: NextRequest) {
     AIDefaultMessageNoVideo: config.AIConfig?.DefaultMessageNoVideo || '',
     AIDefaultMessageWithVideo: config.AIConfig?.DefaultMessageWithVideo || '',
   };
-  return NextResponse.json(result);
+  // 这个接口每次页面加载都会被调用，而 getConfig() 在无状态运行时上经常要重新
+  // 读库 + 自检（实测 TTFB 2.3~2.9 秒）。内容是全站公开配置、无用户相关数据，
+  // 给一分钟浏览器缓存，页面间跳转就不会反复打这个接口。
+  return NextResponse.json(result, {
+    headers: {
+      'Cache-Control': 'public, max-age=60, stale-while-revalidate=600',
+    },
+  });
 }
