@@ -4,15 +4,14 @@ import { NextResponse } from 'next/server';
 
 import { getConfig } from '@/lib/config';
 import { fetchDoubanData } from '@/lib/douban';
+import { getCached } from '@/lib/persistent-cache';
 import { getTMDBTrendingContent, getTMDBVideos } from '@/lib/tmdb.client';
 
-// 缓存配置 - 服务器内存缓存3小时
+// 缓存 3 小时。原先用模块级变量缓存，在 Cloudflare Workers / EdgeOne 这类
+// 无状态运行时上几乎不命中（实例随时回收、各边缘节点独立），导致每次请求都要
+// 重新聚合豆瓣/TMDB 数据并为每个条目串行拉预告片，实测冷路径 5 秒以上。
+// 改为 getCached：内存做 L1、落库做 L2，缓存能跨实例跨节点共享。
 const CACHE_DURATION = 3 * 60 * 60 * 1000; // 3小时
-
-// 为不同数据源分别维护缓存
-let tmdbCache: { data: any; timestamp: number } | null = null;
-let txCache: { data: any; timestamp: number } | null = null;
-let doubanCache: { data: any; timestamp: number } | null = null;
 
 export const dynamic = 'force-dynamic';
 
@@ -22,74 +21,22 @@ export async function GET() {
     const config = await getConfig();
     const bannerDataSource = config.SiteConfig?.BannerDataSource || 'Douban';
 
-    // 根据数据源选择对应的缓存
-    const cache = bannerDataSource === 'TX' ? txCache : bannerDataSource === 'Douban' ? doubanCache : tmdbCache;
+    const result = await getCached<any>(
+      `tmdb-trending:${bannerDataSource}`,
+      CACHE_DURATION,
+      () => fetchBannerContent(bannerDataSource, config)
+    );
 
-    // 检查缓存
-    if (cache && Date.now() - cache.timestamp < CACHE_DURATION) {
-      return NextResponse.json(cache.data);
+    if (result?.code === 400) {
+      return NextResponse.json(result, { status: 400 });
     }
 
-    let result: any;
-
-    // 根据配置的数据源获取数据
-    if (bannerDataSource === 'Douban') {
-      // 使用豆瓣数据源
-      result = await getDoubanBannerContent();
-      // 添加数据源标识
-      result.source = 'Douban';
-      // 更新豆瓣缓存
-      doubanCache = {
-        data: result,
-        timestamp: Date.now(),
-      };
-    } else if (bannerDataSource === 'TX') {
-      // 使用TX数据源
-      result = await getTXBannerContent();
-      // 添加数据源标识
-      result.source = 'TX';
-      // 更新TX缓存
-      txCache = {
-        data: result,
-        timestamp: Date.now(),
-      };
-    } else {
-      // 使用TMDB数据源（默认）
-      const apiKey = config.SiteConfig?.TMDBApiKey;
-      const proxy = config.SiteConfig?.TMDBProxy;
-      const reverseProxy = config.SiteConfig?.TMDBReverseProxy;
-
-      if (!apiKey) {
-        return NextResponse.json(
-          { code: 400, message: 'TMDB API Key 未配置' },
-          { status: 400 }
-        );
-      }
-
-      // 获取热门内容
-      result = await getTMDBTrendingContent(apiKey, proxy, reverseProxy);
-
-      // 为每个项目获取视频数据
-      if (result.code === 200 && result.list) {
-        const itemsWithVideos = await Promise.all(
-          result.list.map(async (item: any) => {
-            const videoKey = await getTMDBVideos(apiKey, item.media_type, item.id, proxy, reverseProxy);
-            return { ...item, video_key: videoKey };
-          })
-        );
-        result.list = itemsWithVideos;
-      }
-
-      // 添加数据源标识
-      result.source = 'TMDB';
-      // 更新TMDB缓存
-      tmdbCache = {
-        data: result,
-        timestamp: Date.now(),
-      };
-    }
-
-    return NextResponse.json(result);
+    // 数据是全站共享的，允许浏览器缓存，避免每次进首页都打这个接口
+    return NextResponse.json(result, {
+      headers: {
+        'Cache-Control': 'private, max-age=1800, stale-while-revalidate=7200',
+      },
+    });
   } catch (error) {
     console.error('获取热门内容失败:', error);
     return NextResponse.json(
@@ -97,6 +44,54 @@ export async function GET() {
       { status: 500 }
     );
   }
+}
+
+async function fetchBannerContent(
+  bannerDataSource: string,
+  config: Awaited<ReturnType<typeof getConfig>>
+): Promise<any> {
+  if (bannerDataSource === 'Douban') {
+    const result: any = await getDoubanBannerContent();
+    result.source = 'Douban';
+    return result;
+  }
+
+  if (bannerDataSource === 'TX') {
+    const result: any = await getTXBannerContent();
+    result.source = 'TX';
+    return result;
+  }
+
+  // TMDB 数据源（默认）
+  const apiKey = config.SiteConfig?.TMDBApiKey;
+  const proxy = config.SiteConfig?.TMDBProxy;
+  const reverseProxy = config.SiteConfig?.TMDBReverseProxy;
+
+  if (!apiKey) {
+    return { code: 400, message: 'TMDB API Key 未配置' };
+  }
+
+  const result: any = await getTMDBTrendingContent(apiKey, proxy, reverseProxy);
+
+  // 为每个项目获取视频数据
+  if (result.code === 200 && result.list) {
+    const itemsWithVideos = await Promise.all(
+      result.list.map(async (item: any) => {
+        const videoKey = await getTMDBVideos(
+          apiKey,
+          item.media_type,
+          item.id,
+          proxy,
+          reverseProxy
+        );
+        return { ...item, video_key: videoKey };
+      })
+    );
+    result.list = itemsWithVideos;
+  }
+
+  result.source = 'TMDB';
+  return result;
 }
 
 /**
